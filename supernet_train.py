@@ -24,6 +24,7 @@ import torch.nn as nn
 from functools import partial
 from lib.config import cfg, update_config_from_file
 from model.supernet_transformer import Vision_TransformerSuper
+from swin_transformer import SwinTransformer
 
 
 def get_args_parser():
@@ -257,6 +258,7 @@ def main(args):
 
     print(f"Creating SuperVisionTransformer")
     print(cfg)
+    """
     model = Vision_TransformerSuper(img_size=args.input_size,
                                     patch_size=args.patch_size,
                                     embed_dim=cfg.SUPERNET.EMBED_DIM, depth=cfg.SUPERNET.DEPTH,
@@ -268,7 +270,13 @@ def main(args):
                                     max_relative_position=args.max_relative_position,
                                     relative_position=args.relative_position,
                                     change_qkv=args.change_qkv, abs_pos=not args.no_abs_pos)
-
+    """
+    
+    """
+    New
+    """
+    model = SwinTransformer()
+    
     choices = {'num_heads': cfg.SEARCH_SPACE.NUM_HEADS, 'mlp_ratio': cfg.SEARCH_SPACE.MLP_RATIO,
                'embed_dim': cfg.SEARCH_SPACE.EMBED_DIM , 'depth': cfg.SEARCH_SPACE.DEPTH}
 
