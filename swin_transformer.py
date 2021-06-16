@@ -215,11 +215,12 @@ class NewWindowAttention(nn.Module):
             mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
         """
         B, H, W, C = x.shape
-        qkv = self.qkv(x).reshape(B, H, W, 3, self.num_heads, C // self.num_heads).permute(3, 0, 4, 1, 2, 5)
+        x = x.view(B, H*W, C)
+        qkv = self.qkv(x).reshape(B, H*W, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
         q = q * self.scale
-        attn = (q @ k.permute(0, 1, 4, 2, 3))
+        attn = (q @ k.transpose(-1, -2))
         print(attn.shape)
 
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
@@ -367,7 +368,7 @@ class SwinTransformerBlock(nn.Module):
         x = x.view(B, H * W, C)
         """
         
-        attn_windows = self.attn(x, mask=self.attn_mask)  # nW*B, window_size*window_size, C
+        attn_windows = self.attn(x, self.window_size, mask=self.attn_mask)  # nW*B, window_size*window_size, C
         
         # FFN
         x = shortcut + self.drop_path(x)
