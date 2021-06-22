@@ -20,10 +20,24 @@ def sample_configs(choices):
     depth = random.choice(choices['depth'])
     for dimension in dimensions:
         config[dimension] = [random.choice(choices[dimension]) for _ in range(depth)]
-
+    
+    
     config['embed_dim'] = [random.choice(choices['embed_dim'])]*depth
+    
+    config['window_size'] = [random.randint(1, choices['window_size']//2) * 2 + 1 for _ in range(depth)]
+    
+    stage = 1
+    layer = 0
+    for i in range(depth):
+        if i >= 2**stage + layer:
+            layer += 2**stage
+            stage += 1
+        config['embed_dim'][i] = config['embed_dim'][i] * (2 ** (stage - 1))
 
     config['layer_num'] = depth
+    
+    architecture = [[0], [1], [1,0], [0,1]]
+    config['arch'] = [random.choice(architecture) for _ in range(depth)]
     return config
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -31,7 +45,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
                     amp: bool = True, teacher_model: torch.nn.Module = None,
-                    teach_loss: torch.nn.Module = None, distill_token: bool=False, choices=None, mode='super', retrain_config=None):
+                    teach_loss: torch.nn.Module = None, distill_token: bool=False, choices=None, 
+                    mode='super', retrain_config=None):
     model.train()
     criterion.train()
 
@@ -52,7 +67,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-
+        
         # sample random config
         if mode == 'super':
             config = sample_configs(choices=choices)
@@ -64,6 +79,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             model_module.set_sample_config(config=config)
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
+        
         if amp:
             with torch.cuda.amp.autocast():
                 if teacher_model:

@@ -15,6 +15,7 @@ from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
 from timm.utils import NativeScaler, get_state_dict, ModelEma
 from timm.data import DatasetTar
+from data_builder import build_loader
 from datasets import build_dataset
 from supernet_engine import train_one_epoch, evaluate
 from samplers import RASampler
@@ -23,7 +24,7 @@ from datasets import build_transform
 import torch.nn as nn
 from functools import partial
 from lib.config import cfg, update_config_from_file
-from model.supernet_transformer import Vision_TransformerSuper
+from model.supernet_transformer import Vision_TransformerSuper, Original_Vision_TransformerSuper
 from swin_transformer import SwinTransformer
 
 
@@ -42,7 +43,7 @@ def get_args_parser():
     parser.add_argument('--relative_position', action='store_true')
     parser.add_argument('--gp', action='store_true')
     parser.add_argument('--change_qkv', action='store_true')
-    parser.add_argument('--max_relative_position', type=int, default=14, help='max distance in relative position embedding')
+    parser.add_argument('--max_relative_position', type=int, default=56, help='max distance in relative position embedding')
 
     # Model parameters
     parser.add_argument('--model', default='deit_base_patch16_224', type=str, metavar='MODEL',
@@ -50,8 +51,8 @@ def get_args_parser():
     # AutoFormer config
     parser.add_argument('--mode', type=str, default='super', choices=['super', 'retrain'], help='mode of AutoFormer')
     parser.add_argument('--input-size', default=224, type=int)
-    parser.add_argument('--patch_size', default=16, type=int)
-
+    parser.add_argument('--patch_size', default=7, type=int)
+    parser.add_argument('--window_size', default=7, type=int)
     parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
                         help='Dropout rate (default: 0.)')
     parser.add_argument('--drop-path', type=float, default=0.1, metavar='PCT',
@@ -193,10 +194,12 @@ def main(args):
 
     utils.init_distributed_mode(args)
     update_config_from_file(args.cfg)
-
+  
+  
+    print("\n\nConfigurations:")
     print(args)
+    
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
-
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
@@ -205,64 +208,19 @@ def main(args):
     np.random.seed(seed)
     # random.seed(seed)
     cudnn.benchmark = True
-
-    dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
-    dataset_val, _ = build_dataset(is_train=False, args=args)
-
-    if args.distributed:
-        num_tasks = utils.get_world_size()
-        global_rank = utils.get_rank()
-        if args.repeated_aug:
-            sampler_train = RASampler(
-                dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-            )
-        else:
-            sampler_train = torch.utils.data.DistributedSampler(
-                dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-            )
-        if args.dist_eval:
-            if len(dataset_val) % num_tasks != 0:
-                print(
-                    'Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
-                    'This will slightly alter validation results as extra duplicate entries are added to achieve '
-                    'equal num of samples per-process.')
-            sampler_val = torch.utils.data.DistributedSampler(
-                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=False)
-        else:
-            sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-    else:
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
-
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
-
-    data_loader_val = torch.utils.data.DataLoader(
-        dataset_val, batch_size=int(2 * args.batch_size),
-        sampler=sampler_val, num_workers=args.num_workers,
-        pin_memory=args.pin_mem, drop_last=False
-    )
-
-    mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
-    if mixup_active:
-        mixup_fn = Mixup(
-            mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-            label_smoothing=args.smoothing, num_classes=args.nb_classes)
-
-    print(f"Creating SuperVisionTransformer")
+    
+    print(f"\n\nPreparing dataset ...")
+    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = build_loader(args)
+    print(f"Dataset Done!")
+    
+    print(f"\n\nCreating SuperVisionTransformer")
     print(cfg)
-    """
+    
     model = Vision_TransformerSuper(img_size=args.input_size,
                                     patch_size=args.patch_size,
                                     embed_dim=cfg.SUPERNET.EMBED_DIM, depth=cfg.SUPERNET.DEPTH,
                                     num_heads=cfg.SUPERNET.NUM_HEADS,mlp_ratio=cfg.SUPERNET.MLP_RATIO,
+                                    window_size=cfg.SUPERNET.WINDOW_SIZE,
                                     qkv_bias=True, drop_rate=args.drop,
                                     drop_path_rate=args.drop_path,
                                     gp=args.gp,
@@ -270,16 +228,11 @@ def main(args):
                                     max_relative_position=args.max_relative_position,
                                     relative_position=args.relative_position,
                                     change_qkv=args.change_qkv, abs_pos=not args.no_abs_pos)
-    """
-    
-    """
-    New
-    """
-    model = SwinTransformer()
     
     choices = {'num_heads': cfg.SEARCH_SPACE.NUM_HEADS, 'mlp_ratio': cfg.SEARCH_SPACE.MLP_RATIO,
-               'embed_dim': cfg.SEARCH_SPACE.EMBED_DIM , 'depth': cfg.SEARCH_SPACE.DEPTH}
-
+               'embed_dim': cfg.SEARCH_SPACE.EMBED_DIM , 'depth': cfg.SEARCH_SPACE.DEPTH, 
+               'window_size': cfg.SUPERNET.WINDOW_SIZE}
+    
     model.to(device)
     if args.teacher_model:
         teacher_model = create_model(
@@ -297,12 +250,12 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
-
+    print(f"Model Done!")
+    
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('number of params:', n_parameters)
+    print(f'Number of params:', n_parameters)
 
     linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
     args.lr = linear_scaled_lr
